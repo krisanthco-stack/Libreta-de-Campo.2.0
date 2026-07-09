@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+    <title>Agrimensor Pro - CRTM05</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #fdf6e3; padding: 10px; font-size: 16px; color: #333; margin: 0; }
+        #map { height: 45vh; border: 3px solid #5d4037; border-radius: 6px; margin-bottom: 10px; }
+        .stats { background: #e0d5c1; padding: 10px; margin-bottom: 10px; border: 2px solid #5d4037; font-size: 16px; font-weight: bold; text-align: center; border-radius: 6px;}
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        button { background: #5d4037; color: white; padding: 12px; border: none; font-weight: bold; font-size: 15px; border-radius: 6px; cursor: pointer; }
+        .btn-rojo { background: #8b0000; }
+        .btn-verde { background: #2e5339; }
+        .punto-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid #ccc; font-size: 14px; }
+        .del-btn { background: #8b0000; color: white; padding: 5px 10px; border-radius: 4px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h3 style="margin-top:0;">Agrimensor Pro (Costa Rica)</h3>
+    <div id="map"></div>
+    <div class="stats">Área: <span id="area-val">0</span> m² | Perímetro: <span id="dist-val">0</span> m</div>
+
+    <div class="grid">
+        <button onclick="marcarGPS()">📍 GPS Preciso</button>
+        <button id="btn-manual" onclick="toggleManual()">🖱️ Modo Clic</button>
+        <button onclick="toggleMapa()">🛰️ Mapa / Sat</button>
+        <button onclick="document.getElementById('file-input').click()" class="btn-verde">📂 Importar CSV</button>
+        <button onclick="exportarCSV()">💾 Exportar CSV</button>
+        <button onclick="exportarDXF()">🏗️ Exportar DXF</button>
+        <button onclick="borrar()" class="btn-rojo" style="grid-column: span 2;">❌ Limpiar Todo</button>
+    </div>
+    
+    <input type="file" id="file-input" style="display:none" accept=".csv" onchange="importarCSV(this)">
+    <ul id="lista-puntos" style="padding: 0; margin-top: 15px; list-style: none;"></ul>
+
+    <script>
+        // 1. Inicialización y Persistencia
+        let puntos = JSON.parse(localStorage.getItem('puntos') || '[]');
+        let map = L.map('map').setView([10.46, -83.98], 14); // Centrado inicial en zona Sarapiquí
+        let modoSat = false, modoManual = false;
+
+        let osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        let sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {attribution: 'Esri'});
+
+        let marcadores = L.layerGroup().addTo(map);
+        let poligono = L.polygon([], {color: '#2e5339', weight: 3, fillOpacity: 0.3}).addTo(map);
+
+        // 2. Conversión Matemática a CRTM05 (Aproximación plana local)
+        function toCRTM05(lat, lon) {
+            const rad = Math.PI / 180;
+            const x = 500000 + (lon - (-84.0)) * 111319.9 * Math.cos(lat * rad);
+            const y = lat * 110574.6;
+            return { x: parseFloat(x.toFixed(2)), y: parseFloat(y.toFixed(2)) };
+        }
+
+        // 3. Cálculos de Geometría
+        function calcularTodo() {
+            if (puntos.length < 3) return { a: "0.00", p: "0.00" };
+            let coords = puntos.map(p => toCRTM05(p.lat, p.lon));
+            let area = 0, perim = 0;
+            for (let i = 0; i < coords.length; i++) {
+                let j = (i + 1) % coords.length;
+                area += (coords[i].x * coords[j].y) - (coords[j].x * coords[i].y);
+                perim += Math.sqrt(Math.pow(coords[j].x - coords[i].x, 2) + Math.pow(coords[j].y - coords[i].y, 2));
+            }
+            return { a: Math.abs(area / 2).toFixed(2), p: perim.toFixed(2) };
+        }
+
+        // 4. Renderizado de Interfaz
+        function render() {
+            marcadores.clearLayers();
+            const lista = document.getElementById('lista-puntos');
+            lista.innerHTML = "";
+            
+            puntos.forEach((p, i) => {
+                let crt = toCRTM05(p.lat, p.lon);
+                L.marker([p.lat, p.lon]).addTo(marcadores).bindPopup(`P${i+1}<br>N: ${crt.y}<br>E: ${crt.x}`);
+                const li = document.createElement('li');
+                li.className = 'punto-item';
+                li.innerHTML = `P${i+1} (N:${crt.y}, E:${crt.x}) <span class="del-btn" onclick="eliminar(${i})">X</span>`;
+                lista.appendChild(li);
+            });
+            
+            poligono.setLatLngs(puntos.map(p => [p.lat, p.lon]));
+
+            let calc = calcularTodo();
+            document.getElementById('area-val').innerText = calc.a;
+            document.getElementById('dist-val').innerText = calc.p;
+
+            localStorage.setItem('puntos', JSON.stringify(puntos));
+            
+            // Autoenfoque en el mapa
+            if (puntos.length > 0 && !modoManual) {
+                map.setView([puntos[puntos.length - 1].lat, puntos[puntos.length - 1].lon], 18);
+            }
+        }
+
+        // 5. Interacciones de Usuario
+        function marcarGPS() {
+            navigator.geolocation.getCurrentPosition(pos => {
+                puntos.push({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+                render();
+            }, (e) => alert("Error GPS: " + e.message), { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+        }
+
+        function toggleManual() { 
+            modoManual = !modoManual; 
+            document.getElementById('btn-manual').className = modoManual ? 'btn-verde' : ''; 
+        }
+        map.on('click', (e) => { if (modoManual) { puntos.push({ lat: e.latlng.lat, lon: e.latlng.lng }); render(); } });
+
+        function toggleMapa() {
+            modoSat = !modoSat;
+            if (modoSat) { map.addLayer(sat); map.removeLayer(osm); }
+            else { map.addLayer(osm); map.removeLayer(sat); }
+        }
+
+        function eliminar(i) { puntos.splice(i, 1); render(); }
+        function borrar() { if (confirm("¿Borrar todo definitivamente?")) { puntos = []; render(); } }
+
+        // 6. Importación y Exportación
+        function exportarCSV() {
+            if (puntos.length === 0) return alert("No hay datos para exportar.");
+            let calc = calcularTodo();
+            let csv = "ID,Norte(Y),Este(X),Latitud,Longitud\n" + puntos.map((p, i) => {
+                let c = toCRTM05(p.lat, p.lon);
+                return `${i+1},${c.y},${c.x},${p.lat},${p.lon}`;
+            }).join("\n");
+            csv += `\n\n--- RESUMEN ---\nArea (m2),${calc.a}\nPerimetro (m),${calc.p}\n`;
+            
+            let a = document.createElement('a');
+            a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+            a.download = 'levantamiento.csv';
+            a.click();
+        }
+
+        function exportarDXF() {
+            if (puntos.length === 0) return alert("No hay puntos para exportar.");
+            let dxf = "0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\n0\n90\n" + puntos.length + "\n70\n1\n";
+            puntos.forEach(p => {
+                let c = toCRTM05(p.lat, p.lon);
+                dxf += `10\n${c.x}\n20\n${c.y}\n`;
+            });
+            dxf += "0\nENDSEC\n0\nEOF";
+            
+            let a = document.createElement('a');
+            a.href = URL.createObjectURL(new Blob([dxf], {type: 'application/dxf'}));
+            a.download = 'poligono.dxf';
+            a.click();
+        }
+
+        function importarCSV(input) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const lines = e.target.result.split('\n');
+                for (let i = 1; i < lines.length; i++) {
+                    if (lines[i].includes('---')) break; // Evita leer la zona de Resumen
+                    const cols = lines[i].split(',');
+                    if (cols.length >= 5) {
+                        let lat = parseFloat(cols[3]);
+                        let lon = parseFloat(cols[4]);
+                        if(!isNaN(lat) && !isNaN(lon)) puntos.push({lat, lon});
+                    }
+                }
+                render();
+                input.value = ""; // Resetea el botón de archivo
+            };
+            if(input.files[0]) reader.readAsText(input.files[0]);
+        }
+
+        // 7. Arranque Inicial
+        render();
+        if(puntos.length > 0) map.setView([puntos[0].lat, puntos[0].lon], 16);
+    </script>
+</body>
+</html>
